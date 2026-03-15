@@ -1,0 +1,66 @@
+- block:
+    - name: Include collectd setup
+      ansible.builtin.include_tasks: collectd_setup.yml
+      
+    - name: Install CloudWatch agent (yum)
+      ansible.builtin.yum:
+        name: amazon-cloudwatch-agent
+        state: present
+      register: cwagent_yum_install
+      failed_when: false
+      when: cloudwatch_agent_install_method in ['auto', 'yum']
+      
+    - name: Download CloudWatch agent RPM
+      ansible.builtin.get_url:
+        url: "{{ cloudwatch_agent_rpm_url }}"
+        dest: /tmp/amazon-cloudwatch-agent.rpm
+        mode: '0644'
+      when:
+        - cloudwatch_agent_install_method in ['auto', 'rpm']
+        - >-
+          cloudwatch_agent_install_method == 'rpm'
+          or (
+            cloudwatch_agent_install_method == 'auto'
+            and (
+              cwagent_yum_install is failed
+              or cwagent_yum_install.rc|default(0) != 0
+            )
+          )
+      
+    - name: Install CloudWatch agent RPM
+      ansible.builtin.yum:
+        name: /tmp/amazon-cloudwatch-agent.rpm
+        state: present
+        disable_gpg_check: yes
+      when:
+        - cloudwatch_agent_install_method in ['auto', 'rpm']
+        - >-
+          cloudwatch_agent_install_method == 'rpm'
+          or (
+            cloudwatch_agent_install_method == 'auto'
+            and (
+              cwagent_yum_install is failed
+              or cwagent_yum_install.rc|default(0) != 0
+            )
+          )
+    
+    - name: Ensure CloudWatch Agent config directory exists
+      ansible.builtin.file:
+        path: /opt/aws/amazon-cloudwatch-agent/etc
+        state: directory
+        mode: '0755'
+    
+    - name: Create CloudWatch Agent config
+      ansible.builtin.template:
+        src: amazon-cloudwatch-agent.json.j2
+        dest: "{{ cloudwatch_agent_config_path }}"
+        mode: '0644'
+      notify: Apply CloudWatch Agent config
+    
+    - name: Enable and start CloudWatch agent service
+      ansible.builtin.service:
+        name: amazon-cloudwatch-agent
+        enabled: true
+        state: started
+  become: yes
+  become_user: root
