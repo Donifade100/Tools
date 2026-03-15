@@ -1,0 +1,104 @@
+- name: Check OS distribution
+  ansible.builtin.setup:
+    filter: ansible_distribution*
+  register: os_facts
+  
+- block:
+    - name: Remove default EPEL repository configurations
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/yum.repos.d/epel.repo
+        - /etc/yum.repos.d/epel-testing.repo
+      ignore_errors: yes
+    
+    - name: Create custom EPEL repository file pointing to Artifactory
+      ansible.builtin.template:
+        src: internal-epel.repo.j2
+        dest: /etc/yum.repos.d/internal-epel.repo
+        owner: root
+        group: root
+        mode: '0644'
+    
+    - name: Clean DNF cache
+      ansible.builtin.command: dnf clean all
+      become: true
+    
+    - name: Install collectd
+      ansible.builtin.dnf:
+        name:
+          - collectd
+        state: present
+        update_cache: yes
+
+    - name: Install collectd-curl_json (JMX config plugin)
+      ansible.builtin.dnf:
+        name:
+          - collectd-curl_json
+        state: present
+        update_cache: yes
+      when: 
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version in ['8', '9']
+    
+    - name: Create collectd config directory
+      ansible.builtin.file:
+        path: "{{ cloudwatch_agent_collectd_conf_d_dir }}"
+        state: directory
+        mode: '0755'
+    
+    - name: Create backup of original collectd configuration
+      ansible.builtin.copy:
+        src: /etc/collectd.conf
+        dest: /etc/collectd.conf.bak
+        remote_src: yes
+      ignore_errors: yes
+    
+    - name: Create collectd configuration
+      ansible.builtin.template:
+        src: collectd.conf.j2
+        dest: /etc/collectd.conf
+        owner: root
+        group: root
+        mode: '0644'
+    
+    - name: Ensure collectd directories exist with proper permissions (for jmx config)
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      with_items:
+        - /var/lib/collectd
+        - /etc/collectd.d
+        
+    - name: Create collectd JMX config
+      ansible.builtin.template:
+        src: jmx.conf.j2
+        dest: "{{ cloudwatch_agent_collectd_jmx_conf_path }}"
+        mode: '0644'
+      notify: Restart collectd
+      when: 
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version in ['8', '9']
+
+    - name: Set collectd_t SELinux domain to permissive mode
+      command: semanage permissive -a collectd_t
+      register: semanage_result
+      changed_when: semanage_result.rc == 0
+      failed_when: 
+        - semanage_result.rc != 0 
+        - "'already in permissive mode' not in semanage_result.stderr"
+      when: 
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version in ['8', '9']
+    
+    - name: Enable and start collectd
+      ansible.builtin.service:
+        name: collectd
+        enabled: true
+        state: started
+  become: yes
+  become_user: root
