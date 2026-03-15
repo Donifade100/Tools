@@ -1,5 +1,6 @@
 cloudwatch_agent_install_method: auto
 cloudwatch_agent_rpm_url: https://s3.amazonaws.com/amazoncloudwatch-agent/redhat/amd64/latest/amazon-cloudwatch-agent.rpm
+cloudwatch_agent_rpm_url: < org artifactory url >/artifactory/installers/AmazonCloudWatch/1.300064.0/redhat/amd64/amazon-cloudwatch-agent.rpm
 
 
 cloudwatch_agent_config_path: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
