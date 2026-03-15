@@ -1,0 +1,61 @@
+{
+  "agent": {
+    "metrics_collection_interval": 60,
+    "run_as_user": "root",
+    "debug": true
+  },
+  "metrics": {
+    "namespace": "{{ cloudwatch_agent_metrics_namespace }}",
+    "metrics_collected": {
+      "cpu": {
+        "measurement": ["cpu_usage_idle", "cpu_usage_user", "cpu_usage_system"],
+        "totalcpu": true
+      },
+      "mem": {
+        "measurement": ["mem_used_percent", "mem_available"]
+      },
+      "disk": {
+        "measurement": ["used_percent"],
+        "resources": ["*"]
+      },
+      "swap": {
+        "measurement": ["swap_used_percent"]
+      },
+      "net": {
+        "measurement": ["bytes_sent", "bytes_recv"]
+      },
+      "processes": {
+        "measurement": ["running", "blocked", "sleeping"]
+      },
+      "collectd": {
+        "metrics_aggregation_interval": 60,
+        "service_address": "{{ cloudwatch_agent_collectd_service_address }}",
+        "name_prefix": "collectd_",
+        "collectd_auth_file": "/etc/collectd/auth_file",
+        "collectd_security_level": "none",
+        "collectd_typesdb": ["/usr/share/collectd/types.db"]
+      }
+    },
+
+      
+    "append_dimensions": {
+      "InstanceId": "${aws:InstanceId}"
+    },
+    "aggregation_dimensions": [["InstanceId"]]
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+{% for item in cloudwatch_agent_log_collect_list %}
+          {
+            "file_path": "{{ item.file_path }}",
+            "log_group_name": "{{ item.log_group_name }}",
+            "log_stream_name": "{{ item.log_stream_name }}"
+          }{% if not loop.last %},{% endif %}
+{% endfor %}
+        ]
+      }
+    }
+  }
+}
