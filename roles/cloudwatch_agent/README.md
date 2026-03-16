@@ -6,7 +6,6 @@ This role installs the Amazon CloudWatch Agent and configures it to publish:
 - JVM metrics via collectd JMX (required for JVM metrics)
 - Log files (JBoss/controller/access logs + selected OS logs)
 
-It supports installing CloudWatch Agent via `yum` (registered repos) or via direct RPM download (unregistered RHEL), matching the steps you provided.
 
 ## Requirements
 
@@ -15,6 +14,7 @@ No requirements. Just need a privileged user.
 ## Supported Platforms
 
 - RHEL/CentOS 7/8/9
+- Amazon Linux 2023
 - Amazon Linux 2
 
 ## Role Variables
@@ -56,9 +56,10 @@ This role has no external dependencies.
   tasks:
     - name: Install CloudWatch Agent via RPM
       ansible.builtin.import_role:
-        name: corp.jboss_eap.cloudwatch_agent
+        name: enlyte.tools.cloudwatch_agent
       vars:
         cloudwatch_agent_install_method: rpm
+        cloudwatch_agent_metrics_namespace: MyNameSpace
 ```
 
 ### Override Logs (example)
@@ -91,7 +92,7 @@ Internal use only.
 
 ## Author Information
 
-corp
+Mola Onifade donifade15@gmail.com
 
 ## Changelog
 
