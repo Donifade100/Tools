@@ -1,6 +1,48 @@
 - block:
+    - name: Create CloudWatch agent service group
+      ansible.builtin.group:
+        name: cwagent
+        state: present
+    
+    - name: Create CloudWatch agent service user
+      ansible.builtin.user:
+        name: svc_cw_agent
+        group: cwagent
+        shell: /sbin/nologin
+        system: yes
+        create_home: no
+        comment: "CloudWatch Agent service account"
+        state: present
+    
+    - name: Configure sudo permissions for CloudWatch agent
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/cloudwatch-agent
+        content: |
+          # Allow CloudWatch agent to read system metrics without password
+          svc_cw_agent ALL=(ALL) NOPASSWD: /usr/bin/systemctl status *
+          svc_cw_agent ALL=(ALL) NOPASSWD: /bin/cat /proc/stat
+          svc_cw_agent ALL=(ALL) NOPASSWD: /bin/cat /proc/uptime
+          svc_cw_agent ALL=(ALL) NOPASSWD: /bin/cat /proc/loadavg
+          svc_cw_agent ALL=(ALL) NOPASSWD: /bin/cat /proc/meminfo
+          svc_cw_agent ALL=(ALL) NOPASSWD: /bin/cat /proc/vmstat
+          svc_cw_agent ALL=(ALL) NOPASSWD: /bin/cat /proc/diskstats
+          svc_cw_agent ALL=(ALL) NOPASSWD: /bin/cat /proc/net/dev
+          svc_cw_agent ALL=(ALL) NOPASSWD: /bin/cat /proc/mounts
+          svc_cw_agent ALL=(ALL) NOPASSWD: /usr/bin/df
+        owner: root
+        group: root
+        mode: '0440'
+        validate: 'visudo -cf %s'
+        
     - name: Include collectd setup
       ansible.builtin.include_tasks: collectd_setup.yml
+
+    # Check if CloudWatch agent is already installed
+    - name: Check if CloudWatch agent is installed
+      ansible.builtin.command: rpm -q amazon-cloudwatch-agent
+      register: cwagent_check
+      changed_when: false
+      failed_when: false
       
     - name: Install CloudWatch agent (yum)
       ansible.builtin.yum:
@@ -8,7 +50,9 @@
         state: present
       register: cwagent_yum_install
       failed_when: false
-      when: cloudwatch_agent_install_method in ['auto', 'yum']
+      when: 
+        - cloudwatch_agent_install_method in ['auto', 'yum']
+        - cwagent_check.rc != 0  # Only install if not already installed
       
     - name: Download CloudWatch agent RPM
       ansible.builtin.get_url:
@@ -17,6 +61,7 @@
         mode: '0644'
       when:
         - cloudwatch_agent_install_method in ['auto', 'rpm']
+        - cwagent_check.rc != 0  # Only download if not already installed
         - >-
           cloudwatch_agent_install_method == 'rpm'
           or (
@@ -34,6 +79,7 @@
         disable_gpg_check: yes
       when:
         - cloudwatch_agent_install_method in ['auto', 'rpm']
+        - cwagent_check.rc != 0  # Only install if not already installed
         - >-
           cloudwatch_agent_install_method == 'rpm'
           or (
@@ -50,12 +96,48 @@
         state: directory
         mode: '0755'
     
+    - name: Grant necessary permissions to CloudWatch agent user
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: svc_cw_agent
+        group: cwagent
+        mode: '0755'
+      with_items:
+        - /opt/aws/amazon-cloudwatch-agent/etc
+        - /opt/aws/amazon-cloudwatch-agent/logs
+        - /var/log/amazon/amazon-cloudwatch-agent
+        - /var/run/amazon-cloudwatch-agent
+      ignore_errors: yes
+    
+    - name: Add svc_cw_agent user to necessary groups
+      ansible.builtin.user:
+        name: svc_cw_agent
+        groups: "{{ item }}"
+        append: yes
+      with_items:
+        - adm  # For log access
+        - systemd-journal  # For journal access
+    
     - name: Create CloudWatch Agent config
       ansible.builtin.template:
         src: amazon-cloudwatch-agent.json.j2
         dest: "{{ cloudwatch_agent_config_path }}"
         mode: '0644'
+        owner: svc_cw_agent
+        group: cwagent
       notify: Apply CloudWatch Agent config
+    
+    - name: Set correct ownership for CloudWatch agent files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: svc_cw_agent
+        group: cwagent
+        recurse: yes
+      with_items:
+        - /opt/aws/amazon-cloudwatch-agent
+      ignore_errors: yes
     
     - name: Enable and start CloudWatch agent service
       ansible.builtin.service:
@@ -64,3 +146,10 @@
         state: started
   become: yes
   become_user: root
+
+- name: Include auto discover setup
+  ansible.builtin.include_tasks: auto_discover_setup.yml
+  when: 
+    - ansible_distribution == 'RedHat'
+    - ansible_distribution_major_version in ['8', '9']
+    - jboss_resource_auto_disc_enabled | bool
