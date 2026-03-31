@@ -1,0 +1,306 @@
+#!/usr/bin/env bash
+
+# Enable debugging and error tracing
+set -x
+
+# Function for timestamped logging
+log_message() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+# Set variables
+JBOSS_PROFILE="full-ha"
+OUTPUT_DIR="/etc/collectd.d/auto-discovered"
+TIMESTAMP=$(date +%s)
+DOMAIN="{{ domain }}"
+HOSTNAME="{{ ansible_hostname }}"
+JBOSS_HOME="/opt/jboss/jboss-eap-7.4"
+CLUSTER="{{ cluster }}"
+DEBUG_LOG="/tmp/jboss_discovery_debug.log"
+
+# Start debug log
+log_message "=== JBoss Resource Discovery Debug Log - $(date) ===" > $DEBUG_LOG
+log_message "JBOSS_HOME: $JBOSS_HOME" >> $DEBUG_LOG
+log_message "HOSTNAME: $HOSTNAME" >> $DEBUG_LOG
+log_message "DOMAIN: $DOMAIN" >> $DEBUG_LOG
+log_message "CLUSTER: $CLUSTER" >> $DEBUG_LOG
+
+# Create output directory if it doesn't exist
+mkdir -p $OUTPUT_DIR
+log_message "Created output directory: $OUTPUT_DIR" >> $DEBUG_LOG
+
+# Function to run JBoss CLI commands with error handling
+run_jboss_cli() {
+  log_message "Running JBoss CLI command: $1" >> $DEBUG_LOG
+  
+  # Check if jboss-cli.sh exists
+  if [ ! -f "$JBOSS_HOME/bin/jboss-cli.sh" ]; then
+    echo "ERROR: jboss-cli.sh not found at $JBOSS_HOME/bin/jboss-cli.sh" >> $DEBUG_LOG
+    return 1
+  fi
+  
+  # Try different approaches to run the command
+  echo "Approach 1: Using TERM=dumb" >> $DEBUG_LOG
+  RESULT=$(TERM=dumb $JBOSS_HOME/bin/jboss-cli.sh --connect --command="$1" 2>> $DEBUG_LOG)
+  CLI_STATUS=$?
+  
+  if [ $CLI_STATUS -ne 0 ]; then
+    echo "Approach 1 failed with status $CLI_STATUS. Trying approach 2..." >> $DEBUG_LOG
+    RESULT=$(JBOSS_HOME=$JBOSS_HOME $JBOSS_HOME/bin/jboss-cli.sh --connect --command="$1" 2>> $DEBUG_LOG)
+    CLI_STATUS=$?
+  fi
+  
+  if [ $CLI_STATUS -ne 0 ]; then
+    echo "Approach 2 failed with status $CLI_STATUS. Trying approach 3..." >> $DEBUG_LOG
+    RESULT=$(bash -c "TERM=dumb $JBOSS_HOME/bin/jboss-cli.sh --connect --command=\"$1\"" 2>> $DEBUG_LOG)
+    CLI_STATUS=$?
+  fi
+  
+  if [ $CLI_STATUS -ne 0 ]; then
+    echo "All approaches failed. Command execution failed." >> $DEBUG_LOG
+    return 1
+  fi
+  
+  echo "Command executed successfully. Result:" >> $DEBUG_LOG
+  echo "$RESULT" >> $DEBUG_LOG
+  echo "$RESULT"
+}
+
+# Function to extract names from JBoss CLI output
+extract_names() {
+  local OUTPUT="$1"
+  local NAMES=""
+  
+  # Find the result section and extract names from it
+  # This looks for lines that have the pattern of spaces followed by "Name",
+  NAMES=$(echo "$OUTPUT" | grep -o '        "[^"]*"' | sed 's/^[ ]*"//g' | sed 's/"$//g')
+  
+  # If the above approach doesn't find any names, try a more general approach
+  if [ -z "$NAMES" ]; then
+    # Extract all quoted strings and filter out known headers
+    NAMES=$(echo "$OUTPUT" | grep -o '"[^"]*"' | grep -v "outcome\|success\|result" | sed 's/"//g')
+  fi
+  
+  echo "$NAMES"
+}
+
+# Function to discover JMS queues
+discover_queues() {
+  log_message "Discovering JMS queues..."
+  log_message "=== Discovering JMS queues ===" >> $DEBUG_LOG
+  
+  # Create temporary file for queue list
+  QUEUE_LIST_FILE=$(mktemp)
+  log_message "Created temporary file: $QUEUE_LIST_FILE" >> $DEBUG_LOG
+  
+  # Run CLI command to get all queue names
+  log_message "Running JBoss CLI command for queues..." >> $DEBUG_LOG
+  CLI_OUTPUT=$(run_jboss_cli "/profile=$JBOSS_PROFILE/subsystem=messaging-activemq/server=default:read-children-names(child-type=jms-queue)")
+  echo "$CLI_OUTPUT" > $QUEUE_LIST_FILE
+  
+  if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to get queue list" >> $DEBUG_LOG
+    # Create empty configuration to avoid further errors
+    echo "# Auto-generated JMS queue monitoring configuration (EMPTY DUE TO ERROR) - $(date)" > $OUTPUT_DIR/jms-queues.conf
+    echo "<Plugin curl_json></Plugin>" >> $OUTPUT_DIR/jms-queues.conf
+    return 1
+  fi
+  
+  # Extract queue names from the output using the new function
+  log_message "Extracting queue names from output..." >> $DEBUG_LOG
+  cat $QUEUE_LIST_FILE >> $DEBUG_LOG
+  QUEUE_LIST=$(extract_names "$CLI_OUTPUT")
+  log_message "Extracted queue list: $QUEUE_LIST" >> $DEBUG_LOG
+  
+  # Create queue monitoring configuration
+  log_message "Creating queue monitoring configuration..." >> $DEBUG_LOG
+  echo "# Auto-generated JMS queue monitoring configuration - $(date)" > $OUTPUT_DIR/jms-queues.conf
+  echo "<Plugin curl_json>" >> $OUTPUT_DIR/jms-queues.conf
+  
+  # If queue list is empty, add a comment
+  if [ -z "$QUEUE_LIST" ]; then
+    echo "  # No queues found or extraction failed" >> $OUTPUT_DIR/jms-queues.conf
+    log_message "WARNING: No queues found or extraction failed" >> $DEBUG_LOG
+  else
+    for QUEUE in $QUEUE_LIST; do
+      echo "Processing queue: $QUEUE" >> $DEBUG_LOG
+      echo "  # Queue: $QUEUE" >> $OUTPUT_DIR/jms-queues.conf
+      echo "  <URL \"http://$HOSTNAME.$DOMAIN:8080/jolokia/read/jboss.as:server=default,subsystem=messaging-activemq,runtime-queue=jms.queue.$QUEUE/messageCount\">" >> $OUTPUT_DIR/jms-queues.conf
+      echo "    Instance \"JMSQ-$CLUSTER-$HOSTNAME-$QUEUE\"" >> $OUTPUT_DIR/jms-queues.conf
+      echo "    <Key \"value\">" >> $OUTPUT_DIR/jms-queues.conf
+      echo "      Type \"gauge\"" >> $OUTPUT_DIR/jms-queues.conf
+      echo "      Instance \"queue-message-count\"" >> $OUTPUT_DIR/jms-queues.conf
+      echo "    </Key>" >> $OUTPUT_DIR/jms-queues.conf
+      echo "  </URL>" >> $OUTPUT_DIR/jms-queues.conf
+    done
+  fi
+  
+  echo "</Plugin>" >> $OUTPUT_DIR/jms-queues.conf
+  
+  # Clean up
+  rm -f $QUEUE_LIST_FILE
+  echo "Removed temporary file: $QUEUE_LIST_FILE" >> $DEBUG_LOG
+  
+  echo "Discovered $(echo "$QUEUE_LIST" | wc -w) JMS queues." >> $DEBUG_LOG
+}
+
+# Function to discover datasources
+discover_datasources() {
+  log_message "Discovering datasources..."
+  log_message "=== Discovering datasources ===" >> $DEBUG_LOG
+  
+  # Create temporary files for datasource lists
+  XA_DS_LIST_FILE=$(mktemp)
+  log_message "Created temporary file: $XA_DS_LIST_FILE" >> $DEBUG_LOG
+  
+  # Run CLI command to get all datasource names
+  echo "Running JBoss CLI command for datasources..." >> $DEBUG_LOG
+  CLI_OUTPUT=$(run_jboss_cli "/profile=$JBOSS_PROFILE/subsystem=datasources:read-children-names(child-type=xa-data-source)")
+  echo "$CLI_OUTPUT" > $XA_DS_LIST_FILE
+  
+  if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to get datasource list" >> $DEBUG_LOG
+    # Create empty configuration to avoid further errors
+    echo "# Auto-generated datasource monitoring configuration (EMPTY DUE TO ERROR) - $(date)" > $OUTPUT_DIR/datasources.conf
+    echo "<Plugin curl_json></Plugin>" >> $OUTPUT_DIR/datasources.conf
+    return 1
+  fi
+  
+  # Extract datasource names from the output using the new function
+  echo "Extracting datasource names from output..." >> $DEBUG_LOG
+  cat $XA_DS_LIST_FILE >> $DEBUG_LOG
+  XA_DS_LIST=$(extract_names "$CLI_OUTPUT")
+  echo "Extracted datasource list: $XA_DS_LIST" >> $DEBUG_LOG
+  
+  # Create datasource monitoring configuration
+  echo "Creating datasource monitoring configuration..." >> $DEBUG_LOG
+  echo "# Auto-generated datasource monitoring configuration - $(date)" > $OUTPUT_DIR/datasources.conf
+  echo "<Plugin curl_json>" >> $OUTPUT_DIR/datasources.conf
+
+touch "$OUTPUT_DIR/datasource_types.txt"  # Create the file if it doesn't exist
+> "$OUTPUT_DIR/datasource_types.txt"  # Clear the file
+  
+  # If datasource list is empty, add a comment
+  if [ -z "$XA_DS_LIST" ]; then
+    echo "  # No datasources found or extraction failed" >> $OUTPUT_DIR/datasources.conf
+    echo "WARNING: No datasources found or extraction failed" >> $DEBUG_LOG
+  else
+    # Process XA datasources
+    for DS in $XA_DS_LIST; do
+      echo "Processing datasource: $DS" >> $DEBUG_LOG
+      echo "  # XA Datasource: $DS" >> $OUTPUT_DIR/datasources.conf
+      echo "  <URL \"http://$HOSTNAME.$DOMAIN:8080/jolokia/read/jboss.as:subsystem=datasources,xa-data-source=$DS,statistics=pool/InUseCount\">" >> $OUTPUT_DIR/datasources.conf
+      echo "    Instance \"CPOOL-$CLUSTER-$HOSTNAME-$DS\"" >> $OUTPUT_DIR/datasources.conf
+      echo "    <Key \"value\">" >> $OUTPUT_DIR/datasources.conf
+      echo "      Type \"gauge\"" >> $OUTPUT_DIR/datasources.conf
+      echo "      Instance \"connection-in-use\"" >> $OUTPUT_DIR/datasources.conf
+      echo "    </Key>" >> $OUTPUT_DIR/datasources.conf
+      echo "  </URL>" >> $OUTPUT_DIR/datasources.conf
+      
+      echo "  <URL \"http://$HOSTNAME.$DOMAIN:8080/jolokia/read/jboss.as:subsystem=datasources,xa-data-source=$DS,statistics=pool/AvailableCount\">" >> $OUTPUT_DIR/datasources.conf
+      echo "    Instance \"CPOOL-$CLUSTER-$HOSTNAME-$DS\"" >> $OUTPUT_DIR/datasources.conf
+      echo "    <Key \"value\">" >> $OUTPUT_DIR/datasources.conf
+      echo "      Type \"gauge\"" >> $OUTPUT_DIR/datasources.conf
+      echo "      Instance \"connection-available\"" >> $OUTPUT_DIR/datasources.conf
+      echo "    </Key>" >> $OUTPUT_DIR/datasources.conf
+      echo "  </URL>" >> $OUTPUT_DIR/datasources.conf
+      
+      # Save datasource type for the percentage script
+      echo "$DS:xa-data-source" >> $OUTPUT_DIR/datasource_types.txt
+    done
+  fi
+  
+  echo "</Plugin>" >> $OUTPUT_DIR/datasources.conf
+  
+  # Clean up
+  rm -f $XA_DS_LIST_FILE
+  echo "Removed temporary file: $XA_DS_LIST_FILE" >> $DEBUG_LOG
+  
+  echo "Discovered $(echo "$XA_DS_LIST" | wc -w) XA datasources." >> $DEBUG_LOG
+}
+
+# Function to create connection pool percentage calculation script
+create_percentage_script() {
+  log_message "Creating connection pool percentage calculation script..."
+  log_message "=== Creating connection pool percentage calculation script ===" >> $DEBUG_LOG
+  
+  # Create the script
+  cat > $OUTPUT_DIR/calculate_connection_percent.sh << 'EOF'
+#!/bin/bash
+
+HOSTNAME="{{ ansible_hostname }}"
+DOMAIN="{{ domain }}"
+JOLOKIA_BASE="http://${HOSTNAME}.${DOMAIN}:8080/jolokia"
+DS_TYPE="xa-data-source"
+DS_TYPES_FILE="/etc/collectd.d/auto-discovered/datasource_types.txt"
+CLUSTER="{{ cluster }}"
+
+# Read datasource names from file
+if [ -f "$DS_TYPES_FILE" ]; then
+  while IFS=: read -r DS _; do
+    # Get in-use count
+    IN_USE=$(curl -s "${JOLOKIA_BASE}/read/jboss.as:subsystem=datasources,${DS_TYPE}=${DS},statistics=pool/InUseCount" | grep -o '"value":[0-9]*' | cut -d':' -f2)
+    
+    # Get available count
+    AVAILABLE=$(curl -s "${JOLOKIA_BASE}/read/jboss.as:subsystem=datasources,${DS_TYPE}=${DS},statistics=pool/AvailableCount" | grep -o '"value":[0-9]*' | cut -d':' -f2)
+    
+    if [ -n "$IN_USE" ] && [ -n "$AVAILABLE" ]; then
+      TOTAL=$((IN_USE + AVAILABLE))
+      if [ "$TOTAL" -gt 0 ]; then
+        PERCENT=$((IN_USE * 100 / TOTAL))
+        
+        # Use custom format for plugin instance
+        CUSTOM_INSTANCE="CPOOL-$CLUSTER-$HOSTNAME-$DS"
+        
+        # Output in collectd format with custom instance name
+        echo "PUTVAL ${HOSTNAME}/datasource-${CUSTOM_INSTANCE}/gauge-utilization_percent interval=60 $(date +%s):${PERCENT}"
+      fi
+    fi
+  done < "$DS_TYPES_FILE"
+fi
+EOF
+  
+  # Make the script executable
+  chmod +x $OUTPUT_DIR/calculate_connection_percent.sh
+  echo "Created and made executable: $OUTPUT_DIR/calculate_connection_percent.sh" >> $DEBUG_LOG
+  
+  # Create exec plugin configuration
+  echo "Creating exec plugin configuration..." >> $DEBUG_LOG
+  echo "# Auto-generated connection percentage calculation - $(date)" > $OUTPUT_DIR/connection-percent.conf
+  echo "LoadPlugin exec" >> $OUTPUT_DIR/connection-percent.conf
+  echo "<Plugin exec>" >> $OUTPUT_DIR/connection-percent.conf
+  echo "  Exec \"nobody\" \"$OUTPUT_DIR/calculate_connection_percent.sh\"" >> $OUTPUT_DIR/connection-percent.conf
+  echo "</Plugin>" >> $OUTPUT_DIR/connection-percent.conf
+  
+  echo "Created connection pool percentage calculation script." >> $DEBUG_LOG
+}
+
+# Create include directive file
+create_include_file() {
+  echo "Creating include directive file..."
+  echo "=== Creating include directive file ===" >> $DEBUG_LOG
+  
+  echo "# Auto-generated include file for JBoss monitoring - $(date)" > $OUTPUT_DIR/include.conf
+  echo "Include \"$OUTPUT_DIR/jms-queues.conf\"" >> $OUTPUT_DIR/include.conf
+  echo "Include \"$OUTPUT_DIR/datasources.conf\"" >> $OUTPUT_DIR/include.conf
+  echo "Include \"$OUTPUT_DIR/connection-percent.conf\"" >> $OUTPUT_DIR/include.conf
+  
+  echo "Created include directive file: $OUTPUT_DIR/include.conf" >> $DEBUG_LOG
+}
+
+# Main execution with error handling
+log_message "=== Starting main execution ===" >> $DEBUG_LOG
+
+# Attempt to discover queues but continue even if it fails
+discover_queues || log_message "Queue discovery failed but continuing..." >> $DEBUG_LOG
+
+# Attempt to discover datasources but continue even if it fails
+discover_datasources || log_message "Datasource discovery failed but continuing..." >> $DEBUG_LOG
+
+# These steps should always run
+create_percentage_script
+create_include_file
+
+log_message "Auto-discovery complete. Configuration files created in $OUTPUT_DIR" | tee -a $DEBUG_LOG
+log_message "To activate, add 'Include \"$OUTPUT_DIR/include.conf\"' to your collectd.conf" | tee -a $DEBUG_LOG
+log_message "Debug log available at: $DEBUG_LOG"
