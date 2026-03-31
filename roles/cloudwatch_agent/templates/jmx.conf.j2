@@ -49,8 +49,8 @@ LoadPlugin network
 </URL>
 
   # JMS Queue Message Count - Using runtime-queue entries
-  <URL "http://{{ ansible_hostname }}.{{ domain }}:8080/jolokia/read/jboss.as:server=default,subsystem=messaging-activemq,runtime-queue=jms.queue.CORESERVICES.ERROR_LOG/messageCount">
-    Instance "jms-CORESERVICES-ERROR_LOG"
+  {# <URL "http://{{ ansible_hostname }}.{{ domain }}:8080/jolokia/read/jboss.as:server=default,subsystem=messaging-activemq,runtime-queue=jms.queue.CORESERVICES.ERROR_LOG/messageCount">
+    Instance "JMSQ-{{ cluster }}-{{ ansible_hostname }}-CORESERVICES-ERROR_LOG"
     <Key "value">
       Type "gauge"
       Instance "queue-message-count"
@@ -59,7 +59,7 @@ LoadPlugin network
 
    # Datasource Connection Pool Metrics
   <URL "http://{{ ansible_hostname }}.{{ domain }}:8080/jolokia/read/jboss.as:subsystem=datasources,xa-data-source=CCDBDataSource,statistics=pool/InUseCount">
-    Instance "jboss-datasource-CCDBDataSource"
+    Instance "CPOOL-{{ cluster }}-{{ ansible_hostname }}-CCDBDataSource"
     <Key "value">
       Type "gauge"
       Instance "connection-in-use"
@@ -67,10 +67,10 @@ LoadPlugin network
   </URL>
   
   <URL "http://{{ ansible_hostname }}.{{ domain }}:8080/jolokia/read/jboss.as:subsystem=datasources,xa-data-source=CCDBDataSource,statistics=pool/AvailableCount">
-    Instance "jboss-datasource-CCDBDataSource"
+    Instance "CPOOL-{{ cluster }}-{{ ansible_hostname }}-CCDBDataSource"
     <Key "value">
       Type "gauge"
       Instance "connection-available"
     </Key>
-  </URL>
+  </URL> #}
 </Plugin>
