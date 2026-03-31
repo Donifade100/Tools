@@ -4,6 +4,10 @@
         name: collectd
         state: restarted
 
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
     - name: Apply CloudWatch Agent config
       ansible.builtin.command: >-
         /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl
