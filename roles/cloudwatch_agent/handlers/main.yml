@@ -1,25 +1,90 @@
 - block:
-    - name: Restart collectd
-      ansible.builtin.service:
-        name: collectd
-        state: restarted
+    - name: Create directory for auto-discovered configurations
+      ansible.builtin.file:
+        path: /etc/collectd.d/auto-discovered
+        state: directory
+        mode: 0755
+        owner: svc_cw_agent  # Allow CloudWatch agent user to write configs
+        group: cwagent
+      when: 
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version in ['8', '9']
+    
+    - name: Create JBoss resource auto-discovery script
+      ansible.builtin.template:
+        src: disc_jboss_resources.sh.j2
+        dest: /usr/local/bin/disc_jboss_resources.sh
+        mode: 0755
+        owner: root
+        group: cwagent  # Allow group to read the script
+      when: 
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version in ['8', '9']
+        
+    - name: Configure sudo permissions for CloudWatch agent to restart collectd
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/svc_cw_agent_collectd
+        content: |
+          # Allow CloudWatch agent to restart collectd without password
+          svc_cw_agent ALL=(ALL) NOPASSWD: /bin/systemctl restart collectd
+        owner: root
+        group: root
+        mode: '0440'
+        validate: 'visudo -cf %s'
+      when: 
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version in ['8', '9']
+    
+    - name: Set up cron job for auto-discovery
+      ansible.builtin.cron:
+        name: "JBoss resource auto-discovery"
+        hour: "8"
+        minute: "0"
+        job: "/usr/local/bin/disc_jboss_resources.sh >> /var/log/disc_jboss_resources.log 2>&1 && systemctl restart collectd"
+        user: svc_cw_agent
+      when: 
+          - ansible_distribution == 'RedHat'
+          - ansible_distribution_major_version in ['8', '9']
 
-    - name: Reload systemd
-      ansible.builtin.systemd:
-        daemon_reload: yes
+    - name: Create systemd override directory for collectd
+      ansible.builtin.file:
+        path: /etc/systemd/system/collectd.service.d
+        state: directory
+        mode: 0755
+    
+    - name: Configure file descriptor limits for collectd
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/collectd.service.d/limits.conf
+        content: |
+          [Service]
+          LimitNOFILE=65536
+        mode: 0644
+      notify:
+        - Reload systemd
+        - Restart collectd
+    
+    - name: Run auto-discovery script for initial setup
+      ansible.builtin.command: /usr/local/bin/disc_jboss_resources.sh
+      args:
+        creates: /etc/collectd.d/auto-discovered/include.conf
+      notify: Restart collectd
+      when: 
+          - ansible_distribution == 'RedHat'
+          - ansible_distribution_major_version in ['8', '9']
 
-    - name: Apply CloudWatch Agent config
-      ansible.builtin.command: >-
-        /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl
-        -a fetch-config
-        -m ec2
-        -c file:{{ cloudwatch_agent_config_path }}
-        -s
-      changed_when: true
-
-    - name: Restart CloudWatch Agent
-      ansible.builtin.service:
-        name: amazon-cloudwatch-agent
-        state: restarted
+    # Ensure auto-discovered configurations have correct permissions
+    - name: Set permissions on auto-discovered configurations
+      ansible.builtin.file:
+        path: "/etc/collectd.d/auto-discovered"
+        state: directory
+        recurse: yes
+        owner: svc_cw_agent
+        group: cwagent
+        mode: "0755"
+      when: 
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version in ['8', '9']
+        - ansible_check_mode == false
+      ignore_errors: yes
   become: yes
   become_user: root
