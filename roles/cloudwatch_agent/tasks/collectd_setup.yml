@@ -25,12 +25,29 @@
       ansible.builtin.command: dnf clean all
       become: true
     
+    # Check if collectd is already installed
+    - name: Check if collectd is installed
+      ansible.builtin.command: rpm -q collectd
+      register: collectd_check
+      changed_when: false
+      failed_when: false
+    
     - name: Install collectd
       ansible.builtin.dnf:
         name:
           - collectd
         state: present
         update_cache: yes
+      when: collectd_check.rc != 0
+
+    - name: Check if collectd-curl_json is installed
+      ansible.builtin.command: rpm -q collectd-curl_json
+      register: collectd_curl_json_check
+      changed_when: false
+      failed_when: false
+      when: 
+        - ansible_distribution == 'RedHat'
+        - ansible_distribution_major_version in ['8', '9']
 
     - name: Install collectd-curl_json (JMX config plugin)
       ansible.builtin.dnf:
@@ -41,6 +58,7 @@
       when: 
         - ansible_distribution == 'RedHat'
         - ansible_distribution_major_version in ['8', '9']
+        - collectd_curl_json_check.rc != 0
     
     - name: Create collectd config directory
       ansible.builtin.file:
@@ -85,7 +103,7 @@
         - ansible_distribution_major_version in ['8', '9']
 
     - name: Set collectd_t SELinux domain to permissive mode
-      command: semanage permissive -a collectd_t
+      ansible.builtin.command: semanage permissive -a collectd_t
       register: semanage_result
       changed_when: semanage_result.rc == 0
       failed_when: 
