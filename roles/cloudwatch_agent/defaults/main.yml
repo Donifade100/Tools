@@ -1,16 +1,17 @@
 cloudwatch_agent_install_method: auto
-cloudwatch_agent_rpm_url: https://s3.amazonaws.com/amazoncloudwatch-agent/redhat/amd64/latest/amazon-cloudwatch-agent.rpm
-cloudwatch_agent_rpm_url: < org artifactory url >/artifactory/installers/AmazonCloudWatch/1.300064.0/redhat/amd64/amazon-cloudwatch-agent.rpm
-
+# cloudwatch_agent_rpm_url: https://s3.amazonaws.com/amazoncloudwatch-agent/redhat/amd64/latest/amazon-cloudwatch-agent.rpm
+cloudwatch_agent_rpm_url: https://repo.aws.int/artifactory/installers/AmazonCloudWatch/1.300064.0/redhat/amd64/amazon-cloudwatch-agent.rpm
 
 cloudwatch_agent_config_path: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
 cloudwatch_agent_collectd_service_address: udp://127.0.0.1:25826
 collectd_server_host: 127.0.0.1
 collectd_server_port: 25826
 
-cloudwatch_agent_metrics_namespace: JBossNew
+cloudwatch_agent_metrics_namespace: Jboss/Metrics
 
 domain: ""
+cluster: ""
+jboss_resource_auto_disc_enabled: "false"
 
 collectd_base_dir: /var/lib/collectd
 collectd_pid_file: /var/run/collectd.pid
